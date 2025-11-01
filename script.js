@@ -1,20 +1,57 @@
 // Storage keys
 const STORAGE_KEY_TICKETS = 'helpdeskTickets';
-const STORAGE_KEY_ROLE = 'helpdeskRole';
 
-// Role
-let currentRole = loadRole();
+// Login functions
+function checkLoginStatus() {
+  const currentUser = JSON.parse(sessionStorage.getItem('currentUser'));
+  const rememberedUser = JSON.parse(localStorage.getItem('rememberedUser'));
+  
+  // If not logged in and not on login page, redirect to login
+  if (!currentUser && !rememberedUser && !window.location.href.includes('login.html')) {
+    window.location.href = 'login.html';
+    return false;
+  }
+  
+  return true;
+}
+
+function handleLogout() {
+  // Clear user data
+  sessionStorage.removeItem('currentUser');
+  localStorage.removeItem('rememberedUser');
+  
+  // Redirect to login page
+  window.location.href = 'login.html';
+}
+
+// User info
+function getCurrentUser() {
+  return JSON.parse(sessionStorage.getItem('currentUser')) || 
+         JSON.parse(localStorage.getItem('rememberedUser')) || 
+         { username: 'Guest', role: 'user', isLoggedIn: false };
+}
+
+let currentUser = getCurrentUser();
+
+// Get role from logged-in user (capitalize first letter for display)
+function getCurrentRole() {
+  const role = currentUser.role || 'user';
+  return role.charAt(0).toUpperCase() + role.slice(1); // 'admin' -> 'Admin', 'user' -> 'User'
+}
+
+let currentRole = getCurrentRole();
 
 // Timer
 let slaIntervalId = null;
 
 // DOM references
-const roleToggleEl = document.getElementById('roleToggle');
 const activeRoleBadgeEl = document.getElementById('activeRole');
 const formEl = document.getElementById('ticketForm');
 const ticketsContainerEl = document.getElementById('ticketsContainer');
 const emptyStateEl = document.getElementById('emptyState');
 const clearAllBtn = document.getElementById('clearAll');
+const userDisplayNameEl = document.getElementById('userDisplayName');
+const logoutBtnEl = document.getElementById('logoutBtn');
 
 const filterCategoryEl = document.getElementById('filterCategory');
 const filterStatusEl = document.getElementById('filterStatus');
@@ -47,14 +84,7 @@ function saveTickets(tickets) {
   localStorage.setItem(STORAGE_KEY_TICKETS, JSON.stringify(tickets));
 }
 
-function loadRole() {
-  const saved = localStorage.getItem(STORAGE_KEY_ROLE);
-  return saved === 'Admin' ? 'Admin' : 'User';
-}
-
-function saveRole(role) {
-  localStorage.setItem(STORAGE_KEY_ROLE, role);
-}
+// Role is now determined by logged-in user, no need for separate storage
 
 function generateId() {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -192,11 +222,14 @@ function renderTickets() {
 
     const remainingMs = t.dueAt - now();
     const isOverdue = remainingMs < 0;
+    const timeDisplay = isOverdue 
+      ? `${formatRemaining(remainingMs)} overdue` 
+      : `${formatRemaining(remainingMs)} left`;
 
     card.innerHTML = `
       <div class="ticket-header">
         <div class="ticket-select">
-          <input type="checkbox" class="select-ticket" data-id="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''} ${currentRole !== 'Admin' ? 'disabled' : ''} />
+          <input type="checkbox" class="select-ticket" data-id="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''} ${currentUser.role !== 'admin' ? 'disabled' : ''} />
           <h3 class="ticket-title" data-field="title" data-id="${t.id}">${escapeHtml(t.title)}</h3>
         </div>
         <div class="badges">
@@ -209,7 +242,7 @@ function renderTickets() {
       <p class="ticket-desc" data-field="description" data-id="${t.id}">${escapeHtml(t.description)}</p>
       <div class="ticket-meta">
         <div class="left">
-          <span class="countdown" data-countdown="${t.id}">${formatRemaining(remainingMs)} left</span>
+          <span class="countdown" data-countdown="${t.id}">${timeDisplay}</span>
           <span class="assigned">${t.assignedTo ? `• Assigned to ${escapeHtml(t.assignedTo)}` : '• Unassigned'}</span>
         </div>
         <div class="right">
@@ -241,14 +274,16 @@ function renderTickets() {
 }
 
 function applyRolePermissions() {
+  const isAdmin = currentUser.role === 'admin';
   const adminControls = document.querySelectorAll('[data-admin-only]');
   adminControls.forEach(el => {
-    el.style.display = currentRole === 'Admin' ? 'flex' : 'none';
+    el.style.display = isAdmin ? 'flex' : 'none';
   });
-  activeRoleBadgeEl.textContent = `${currentRole} Mode`;
-  if (roleToggleEl) roleToggleEl.checked = currentRole === 'Admin';
+  if (activeRoleBadgeEl) {
+    activeRoleBadgeEl.textContent = `${currentRole} Mode`;
+  }
   // Bulk bar visibility mirrors admin rights
-  if (bulkBarEl) bulkBarEl.style.display = currentRole === 'Admin' ? 'flex' : 'none';
+  if (bulkBarEl) bulkBarEl.style.display = isAdmin ? 'flex' : 'none';
 }
 
 // SLA timers
@@ -261,7 +296,11 @@ function updateSLATimers() {
     const remaining = t.dueAt - nowTs;
     const el = document.querySelector(`[data-countdown="${t.id}"]`);
     if (el) {
-      el.textContent = `${formatRemaining(remaining)} left`;
+      const isOverdue = remaining < 0;
+      const timeDisplay = isOverdue 
+        ? `${formatRemaining(remaining)} overdue` 
+        : `${formatRemaining(remaining)} left`;
+      el.textContent = timeDisplay;
     }
     if (remaining < 0 && t.status !== 'Resolved' && t.status !== 'Closed' && t.status !== 'Escalated') {
       t.status = 'Escalated';
@@ -313,14 +352,24 @@ function formatDateTime(ts) {
 
 // Event wiring
 document.addEventListener('DOMContentLoaded', () => {
-  // Initialize role UI
-  applyRolePermissions();
-  if (roleToggleEl) {
-    roleToggleEl.addEventListener('change', () => {
-      currentRole = roleToggleEl.checked ? 'Admin' : 'User';
-      saveRole(currentRole);
-      applyRolePermissions();
-    });
+  // Check login status
+   if (!checkLoginStatus()) return;
+   
+   // Refresh current user data (in case it changed)
+   currentUser = getCurrentUser();
+   currentRole = getCurrentRole();
+   
+   // Update user display
+   if (userDisplayNameEl) {
+     userDisplayNameEl.textContent = currentUser.username;
+   }
+   
+   // Initialize role UI
+   applyRolePermissions();
+  
+  // Setup logout button
+  if (logoutBtnEl) {
+    logoutBtnEl.addEventListener('click', handleLogout);
   }
 
   // Form submission
@@ -358,7 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Clear all
   if (clearAllBtn) {
     clearAllBtn.addEventListener('click', () => {
-      if (currentRole !== 'Admin') return;
+      if (currentUser.role !== 'admin') return;
       const go = confirm('Delete ALL tickets? This cannot be undone.');
       if (go) clearAllTickets();
     });
@@ -390,12 +439,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (action === 'assign') {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         const person = prompt('Assign to (name):');
         assignTicket(id, person || '');
       }
       if (action === 'delete') {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         const go = confirm('Delete this ticket?');
         if (go) deleteTicket(id);
       }
@@ -403,15 +452,15 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleHistory(id);
       }
       if (action === 'edit') {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         enterEditMode(id);
       }
       if (action === 'save-edit') {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         saveEdit(id);
       }
       if (action === 'cancel-edit') {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         exitEditMode(id, true);
       }
     });
@@ -422,7 +471,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const action = target.getAttribute('data-action');
       const id = target.getAttribute('data-id');
       if (action === 'change-status' && id) {
-        if (currentRole !== 'Admin') return;
+        if (currentUser.role !== 'admin') return;
         const select = target;
         const newStatus = select.value;
         updateStatus(id, newStatus);
@@ -439,10 +488,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // First render
   renderTickets();
 
-  // SLA interval (every minute)
+  // SLA interval (every second for real-time countdown)
   updateSLATimers();
   if (slaIntervalId) clearInterval(slaIntervalId);
-  slaIntervalId = setInterval(updateSLATimers, 60 * 1000);
+  slaIntervalId = setInterval(updateSLATimers, 1000);
 
   // Export/Import
   if (exportBtn) exportBtn.addEventListener('click', exportTickets);
@@ -454,7 +503,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Bulk actions
   if (applyBulkBtn && bulkStatusEl) {
     applyBulkBtn.addEventListener('click', () => {
-      if (currentRole !== 'Admin') return;
+      if (currentUser.role !== 'admin') return;
       const status = bulkStatusEl.value;
       if (!status) return;
       const tickets = loadTickets();
